@@ -1,0 +1,212 @@
+---
+title: "Forest Fires Guided Project"
+author: "Stephen Wang"
+date: "10/09/2019"
+output: html_document
+---
+
+During the last three weeks, I've been embarking on a journey through DataQuest's "Data Analyst in R" course. The first guided project was about forest fires in Portugal which included some simple data manipulation, tidying and statistical inference. But, now that I've finished the course, I wanted to go back and re-attempt this project to see where I improved, what I'm lacking, and the truth behind these forest fires.
+
+```{r setup, include=FALSE}
+library(dplyr) #data manipulation
+library(tidyr) #tidying data 
+library(readr) #reading files 
+library(ggplot2) #data visualisation
+library(purrr) #toolkit for functions and vectors
+library(stringr) #string manipulation
+library(reshape2) #reshaping data
+```
+
+One thing they didn't explore in the course was EDA (exploratory data analysis). This was a beginner course but I wanted to go more in-depth so I used both https://towardsdatascience.com/a-gentle-introduction-to-exploratory-data-analysis-f11d843b8184 and Kaggle to learn more about the process. 
+
+```{r}
+forest_fire <- read_csv('forestfires.csv')
+dim(forest_fire)
+head(forest_fire, 5)
+sum(is.na(forest_fire)) #check for missing values
+summary(forest_fire) #although this method is perfectly fine, it is a little difficult to 'visualise' 
+```
+
+Let's first learn about each variable in the forest fires dataset from this scientific research paper: http://www3.dsi.uminho.pt/pcortez/fires.pdf
+
+There are 517 rows and 13 columns. 
+
+X - x-coordinate of a spatial location on a 9x9 grid
+Y - y-coordinate of a spatial location on a 9x9 grid
+month - month of fire
+day - date of fire
+FFMC - fine fuel moisture content: observations of temperature, relative humidity, wind, and rain
+DMC - duff moisture content: observations of temperature, relative humidity, and rain
+DC - drough code: observations of temperature and rain
+ISI - initial spread index: observations of wind regarding fire behaviour 
+temp - temperature
+RH - relative humidity
+wind - wind speed in km/h
+rain - precipitation levels in mm/m2
+area - area affected by forest fire in ha 
+
+EDA Checklist:
+
+1. What question(s) are you trying to solve (or prove wrong)?
+Our goal is to investigate if we can predict the severity of forest fires in Portugal based on meteorological data and where are the most common locations of forest fire. 
+
+2. What kind of data do you have and how do you treat different types?
+(a) X and Y coordinates are <dbl> but we won't be doing mathematical calculations with the coordiates. However, we could potentially combine the two into it's own column to identify more prone areas of forest fire.
+(b) Areas with 0 mean absence of forest fire. We should identify how many forest fires were present relative to no forest fires to check if the given data can achieve our goal of predicting forest fires.
+(c) Factorise month and day so it is chronological order. Also, since fires are more likely man-made rather than natural causes, the month (holiday seasons, summer vs winter) and dates (weekend vs weekdays) could possibly be a significant factor. 
+
+3. What’s missing from the data and how do you deal with it?
+Luckily for me, the data is all intact and there is no null data (which is quite unrealistic in real case situations)
+
+4. Where are the outliers and why should you care about them?
+First of all, what is an outlier? An outlier is any data point that is outside the 1.5 times the interquartile range(s). Our independent variable is area which has a 2 extreme points (points at 700 and 1000) which may have a quantifiable effect on the investigation. But, our data is gathered through observation rather than random chance so we shouldn't remove the two points. Instead, we can either
+(a) log area due to right-skewed distribution (normal distribution expects median similar to mean)
+(b) partition our data into sets of no fires, low spread fires and high spread fires
+
+5. How can you add, change or remove features to get more out of your data?
+(a) mutate a catergorial variable (fire:yes, fire:no) to compare the variables against each other
+
+```{r}
+sample_numbers <- 1:length(forest_fire$X) 
+fire_outlier <- cbind(sample_numbers,forest_fire)
+scatter_plot <- function(y){
+  ggplot(data=fire_outlier,
+       aes_string(x=sample_numbers,y=y))+
+  geom_point()+
+  xlab("sample number")
+}
+numerical_variables <- names(fire_outlier)[6:14]
+map(numerical_variables,scatter_plot)
+```
+
+There seems to be one or two extreme data points for FFMC, ISI, rain, and area.
+Observations: 
+(a) FFMC: majority of data points are above 80. 
+(b) area: majority of data points are below 10ha. 
+(c) wind, RH, temp, DMC, DC: random scatter across dataset between minimum value and maximum value. 
+(d) ISI: random scatter around range 0 - 20. 
+
+```{r}
+# Adding a new variable, fire, which denotes if a fire was present or not present 
+forest_fire <- forest_fire %>% mutate(fire=if_else(area>0,'yes','no'))
+sum(forest_fire["fire"]=='yes')
+nrow(forest_fire) - sum(forest_fire["fire"]=='yes')
+```
+
+There are 270/517 recorded fires during the time of observation. 
+
+```{r}
+cor_mat <- forest_fire %>% select_if(is.numeric) %>% cor(use="pairwise.complete.obs")
+melted_cor_mat <- melt(cor_mat, na.rm=TRUE)
+ggplot(data=melted_cor_mat,
+       aes(x=Var1,y=Var2,fill=value))+
+  geom_tile(color="white")+
+  theme_minimal()+
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") 
+```
+
+We used Pearson correlation coefficient to check for the strength of the relationships between variables.
+References: http://www.sthda.com/english/wiki/ggplot2-quick-correlation-matrix-heatmap-r-software-and-data-visualization
+
+The problem is that we can probably figure out which variables affect which due to the nature of the variables i.e. FFMC, DMC, DC, and ISI all have common denominator variables (temp, wind, RH, rain).
+
+Our factor of interest is 'area'; 0 indicates no fire, 0< indicates fire. 
+
+```{r}
+fire_present <- forest_fire %>% filter(area>0 & area<100)
+fire_trial <- fire_present %>% mutate(coordinate=paste(as.character(X),", ",as.character(Y),sep=""))
+
+#Frequency chart of fires and area
+fire_frequency <- fire_trial %>% group_by(coordinate) %>% summarise(Freq=n())
+ggplot(data=fire_frequency,
+       aes(x=coordinate,y=Freq,fill=coordinate))+
+  geom_bar(stat="identity")+
+  theme(axis.text.x = element_text(angle=90,hjust=1))
+```
+
+There are two instances of fires where the area is much larger than the rest of the sample (area=700,1000). Let's take a closer look at the fires contained within 0 and 300. 
+
+Why are there so many more fires at coordinates (6,5),(7,4), and (8,6) compared to the rest? 
+This is the map: https://www.montesinho.com/files/mapamontesinho.pdf
+From a quick glance, the highest frequency of forest fires is associated with the concentration of pit stops or rest areas. Fires are, more often than not, man-made so if we do a side-by-side map comparison, we can see this holds true. 
+
+Map with coordinates related to our data: https://www.researchgate.net/figure/The-map-of-Montesinho-natural-park_fig4_290160237
+
+```{r}
+
+# Visual representation of 'area' summary
+ggplot(data=forest_fire,
+       aes(area))+
+  geom_histogram()+
+  ggtitle("area histogram")
+
+summary(forest_fire$area)
+quantile <- quantile(forest_fire$area)
+third_q <- quantile[[4]]
+
+# Outlier = Interquartile_Range * 1.5 +/- IQ_3/iQ_1
+outlier_range <- (quantile[[4]] - quantile[[2]]) * 1.5 + quantile[[4]]
+
+# How many data points are considered outliers? What is the proportion? 
+sum(forest_fire$area >= outlier_range)
+sum(forest_fire$area >= outlier_range)/nrow(forest_fire)*100
+
+# Log transforming area
+logged_fire <- forest_fire %>% mutate(area=log10(area+1))
+ggplot(data=logged_fire,
+       aes(area))+
+  geom_histogram()+
+  ggtitle("log(area) histogram")
+
+
+
+
+```
+
+```{r}
+# Compare scatter plot of area and log(area) 
+ggplot(data=logged_fire,
+       aes(x=DMC,y=area))+
+  geom_point()
+
+ggplot(data=forest_fire,
+       aes(x=DMC,y=area))+
+  geom_point()
+
+# Comparison between variables when there is a fire and when there is not a fire
+logged_comparison <- function(x){
+  ggplot(data=logged_fire,
+       aes_string(x=x,y=logged_fire$area))+
+  geom_point()+
+  ylab("area")+
+  facet_wrap(~fire)
+}
+map(numerical_variables,logged_comparison)
+
+ggplot(data=logged_fire,
+       aes(x=fire,y=ISI))+
+  geom_boxplot()
+```
+
+
+Conclusion:
+
+There is a weak positive correlation between area affected (when there is a fire) and DMC, temp, RH, and wind.
+Whereas, area seems to be random independent of FFMC and ISI. In other words, there is no relationship. We can see from the graphs that even when there is no fire, the range of each variable is also within the same range if there was a fire. I believe Machine Learning is appropriate for this type of classification problem so I may revisit this in the future. 
+
+The top two most common areas for forest fires was coordinates (6,5), (7,4) and (8,6). After looking at the Montesinho map, these two coordinates seemingly have the highest number of resting areas which means increase in human activity. 
+
+Compare: 
+https://www.researchgate.net/figure/The-map-of-Montesinho-natural-park_fig4_290160237 and 
+https://www.montesinho.com/en/oparque/mapa
+
+
+
+
+
+
+
+
+
